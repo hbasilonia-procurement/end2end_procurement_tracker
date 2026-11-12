@@ -182,6 +182,9 @@ input[type=date]{color-scheme:dark}
 .gt td.rn.rsel{background:#cfe3f7;color:#0b4a8b;font-weight:700}
 .gt td.warn{background:#fff4d6}
 .gt td.mnb{border-bottom-color:transparent}
+.gt .ghost{color:#b4bfca}
+.gt .lc{display:inline-block;margin-left:6px;padding:0 6px;border-radius:8px;background:#dbeafe;color:#1e40af;font-size:10px;font-weight:700;vertical-align:1px}
+.gt td.mh.prs-col{overflow:visible}
 .gt td.mh{font-weight:600}
 .gt td.mg:not(.au):not(.sel):not(.act){background:#f7fafc}
 .gt td.mg.au:not(.sel):not(.act){background:#e8f5ec}
@@ -271,7 +274,7 @@ main{padding:14px 12px 50px}.k6,.k4{grid-template-columns:repeat(2,1fr)}.c21,.c1
       <button data-g="paste" title="Paste (Ctrl+V)">Paste</button>
       <button data-g="fill" title="Fill down (Ctrl+D)">⇩ Fill down</button>
       <button data-g="setall" title="Type one value into every selected cell (type, then Ctrl+Enter)">Fill selection…</button>
-      <button data-g="clear" title="Clear contents (Delete)">Clear</button>
+      <button data-g="merge" title="Merge the selected cells across lines (keeps the top value)">⊞ Merge</button><button data-g="unmerge" title="Unmerge the selected cells">⊟ Unmerge</button><button data-g="clear" title="Clear contents (Delete)">Clear</button>
       <button data-g="form" title="Open the full form for this row">Open form</button>
       <button data-g="del" class="red" title="Delete selected rows">Delete rows</button>
       <span class="gsel" id="gsel"></span>
@@ -620,13 +623,44 @@ let COLVIEW='entry', SECON=new Set([0,1,2,3,4,5,6,7,9]);
 const BLANKS=6;
 const NOMERGE=new Set(['line','item','desc','qty','uom','price','ordered','itemDesc','qtyReq','uomReq']); // Oracle PO line data — always one cell per line
 let MERGE=true; try{ MERGE=localStorage.getItem('prs_merge')!=='0'; }catch(e){}
-function mergeMap(byId){ // groups consecutive rows of the same PO (or PRS when there is no PO yet); merges equal, non-blank cells
-  const M=new Map(); if(!MERGE)return M;
-  const gk=id=>{ const o=id&&byId.get(id); return o?(o.po?'PO:'+o.po:(o.prs?'PRS:'+o.prs:null)):null; };
+const UI=()=>{ if(!LISTS.ui)LISTS.ui={}; LISTS.ui.merges=LISTS.ui.merges||[]; LISTS.ui.unmerged=LISTS.ui.unmerged||[]; return LISTS.ui; };
+const prsKey=o=>o?(o.prs?'PRS:'+o.prs:(o.po?'PO:'+o.po:null)):null;
+// Auto-merge: every PRS (fallback PO) is one block; equal non-blank values in a column merge.
+// Manual merges (Merge button) and manual unmerges (Unmerge button) are saved and override the automatic ones.
+function mergeMap(byId){
+  const M=new Map(); if(!MERGE)return M; const ui=UI(), un=new Set(ui.unmerged);
+  const gk=id=>prsKey(id&&byId.get(id));
   let r=0; while(r<G.rows.length){ const k=gk(G.rows[r]); let e=r; while(k&&e+1<G.rows.length&&gk(G.rows[e+1])===k)e++;
-    if(e>r){ G.cols.forEach((col,c)=>{ if(NOMERGE.has(col))return; let a=r; while(a<=e){ const t=gText(byId.get(G.rows[a]),col); let b=a; if(t!==''){ while(b+1<=e&&gText(byId.get(G.rows[b+1]),col)===t)b++; } if(b>a){ const rows=[]; for(let x=a;x<=b;x++)rows.push(x); rows.forEach(x=>M.set(x+','+c,rows)); } a=b+1; } }); }
+    if(e>r){ G.cols.forEach((col,c)=>{ if(NOMERGE.has(col)||un.has(k+'|'+col))return; let a=r; while(a<=e){ const t=gText(byId.get(G.rows[a]),col); let b=a; if(t!==''){ while(b+1<=e&&gText(byId.get(G.rows[b+1]),col)===t)b++; } if(b>a){ const rows=[]; for(let x=a;x<=b;x++)rows.push(x); rows.forEach(x=>M.set(x+','+c,rows)); } a=b+1; } }); }
     r=e+1; }
+  // manual merges: drawn when their lines sit next to each other in the current view
+  const pos=new Map(G.rows.map((id,i)=>[id,i]));
+  ui.merges.forEach(m=>{ const c=G.cols.indexOf(m.k); if(c<0)return; const idx=m.ids.map(id=>pos.get(id)).filter(x=>x!=null).sort((x,y)=>x-y); if(idx.length<2)return;
+    let run=[idx[0]]; const flush=()=>{ if(run.length>1)run.forEach(x=>M.set(x+','+c,run.slice())); };
+    for(let i=1;i<idx.length;i++){ if(idx[i]===idx[i-1]+1)run.push(idx[i]); else { flush(); run=[idx[i]]; } } flush(); });
   return M; }
+async function mergeSel(){
+  if(!MERGE){ MERGE=true; try{localStorage.setItem('prs_merge','1');}catch(e){} }
+  const {r1,r2,c1,c2}=rect(); const ids=G.rows.slice(r1,r2+1); if(r2===r1||ids.some(x=>!x)){ toast('Select cells on two or more saved lines (same column) to merge'); return; }
+  const cols=[]; for(let c=c1;c<=c2;c++)cols.push(G.cols[c]);
+  const blocked=cols.filter(k=>NOMERGE.has(k)); const use=cols.filter(k=>!NOMERGE.has(k));
+  if(!use.length){ toast('Oracle line data (Line, Item, Description, Qty, UOM, Price, Ordered) stays one cell per line'); return; }
+  const src=DEMO?DEMO.rows:RAW; const differ=use.filter(k=>C[k][2]!=='a'&&new Set(ids.map(id=>copyText(src.get(id)||{},k))).size>1);
+  if(differ.length){ const top=differ.map(k=>`${esc(C[k][1])}: “${esc(copyText(src.get(ids[0])||{},k)||'(blank)')}”`).join('<br>');
+    if(!await ask('Merge cells?',`The selected lines have different values. Merging keeps the <b>top</b> value and writes it to all ${ids.length} lines:<br><br>${top}`,[['Cancel',0],['Merge',1,'pri']]))return;
+    const list=[]; differ.forEach(k=>{ const v=copyText(src.get(ids[0])||{},k); for(let r=r1;r<=r2;r++)list.push({r,k,v}); }); await applyChanges(list); }
+  const ui=UI(); use.forEach(k=>{ ui.merges=ui.merges.filter(m=>!(m.k===k&&m.ids.some(id=>ids.includes(id)))); ui.merges.push({k,ids:ids.slice()});
+    ids.forEach(id=>{ const o=ALL.find(x=>x.id===id); const g=prsKey(o); ui.unmerged=ui.unmerged.filter(u=>u!==g+'|'+k); }); });
+  try{ await store.saveLists({...LISTS,ui}); toast(`Merged ${use.length} column(s) across ${ids.length} lines`+(blocked.length?' — Oracle line columns left as they are':'')); }catch(e){ toast(errMsg(e)); }
+}
+async function unmergeSel(){
+  const {r1,r2,c1,c2}=rect(); const ui=UI(); let n=0;
+  for(let c=c1;c<=c2;c++){ const k=G.cols[c]; for(let r=r1;r<=r2;r++){ const mg=G.merge&&G.merge.get(r+','+c); if(!mg)continue; const ids=mg.map(x=>G.rows[x]);
+      const before=ui.merges.length; ui.merges=ui.merges.filter(m=>!(m.k===k&&m.ids.some(id=>ids.includes(id))));
+      const g=prsKey(ALL.find(o=>o.id===ids[0])); if(g&&!ui.unmerged.includes(g+'|'+k))ui.unmerged.push(g+'|'+k); n++; r=mg[mg.length-1]; } }
+  if(!n){ toast('Nothing merged in the selection'); return; }
+  try{ await store.saveLists({...LISTS,ui}); toast('Unmerged — each line now shows its own value'); }catch(e){ toast(errMsg(e)); }
+}
 const G={cols:[],rows:[],a:{r:0,c:2},s:{r:0,c:2},drag:false,edit:null,undo:[],cells:[]};
 const W={stage:150,pay:120,prs:120,prsDate:96,sbu:100,dept:150,itemDesc:200,supplier:170,po:120,poDate:96,line:50,item:120,desc:220,qty:70,uom:70,price:96,ordered:104,vat:84,terms:110,expDel:96,buyer:100,dr:100,actDel:96,qtyRec:70,delStatus:110,rr:90,si:110,invDate:96,docsRec:110,invAmt:104,match:120,transAP:110,docsOk:60,due:96,net:104,datePaid:96,paid:104,bal:104,remarks:200,missing:180,apRemarks:170};
 
@@ -645,12 +679,14 @@ function inList(k,v){ const c=C[k]; if(!c||c[2]!=='s'||v==null||v==='')return tr
 function renderTracker(D){
   if(G.edit){G.pending=true;return;}
   const sf=document.getElementById('stageF').value, pf=document.getElementById('payF').value;
-  const R=D.filter(o=>(!sf||o.stage===sf)&&(!pf||o.pay===pf));
+  let R=D.filter(o=>(!sf||o.stage===sf)&&(!pf||o.pay===pf));
+  if(MERGE){ const first=new Map(); R.forEach(o=>{ const g=prsKey(o)||o.id; if(!first.has(g))first.set(g,o.seq||0); else first.set(g,Math.min(first.get(g),o.seq||0)); });
+    R=R.slice().sort((a,b)=>{ const ga=prsKey(a)||a.id, gb=prsKey(b)||b.id; return (first.get(ga)-first.get(gb))||(ga<gb?-1:ga>gb?1:0)||((a.seq||0)-(b.seq||0)); }); }
   G.cols=visCols(); G.rows=R.map(o=>o.id).concat(Array(BLANKS).fill(null));
   const filt=sf||pf||document.getElementById('q').value||document.getElementById('sbu').value;
   document.getElementById('trSub').textContent=`${R.length} of ${ALL.length} rows${filt?' (filtered)':''} • click a cell and type, drag to select, Ctrl+C / Ctrl+V to copy & paste blocks from Excel or Oracle`;
   // column view buttons
-  document.getElementById('colSeg').innerHTML=`<button data-mg="1" class="${MERGE?'on':''}" title="Show repeated PRS / PO details once across that PO's line items">⊞ Merge same PO</button><button data-cv="entry" class="${COLVIEW==='entry'?'on':''}">Entry view</button><button data-cv="all" class="${COLVIEW==='all'&&SECON.size===SECTIONS.length?'on':''}">All 78 columns</button>`+SHORT.map((n,i)=>COLVIEW==='entry'?'':`<button data-sec="${i}" class="${SECON.has(i)?'on':''}">${n}</button>`).join('');
+  document.getElementById('colSeg').innerHTML=`<button data-mg="1" class="${MERGE?'on':''}" title="Automatically merge repeated details across the lines of each PRS">⊞ Auto-merge by PRS</button><button data-cv="entry" class="${COLVIEW==='entry'?'on':''}">Entry view</button><button data-cv="all" class="${COLVIEW==='all'&&SECON.size===SECTIONS.length?'on':''}">All 78 columns</button>`+SHORT.map((n,i)=>COLVIEW==='entry'?'':`<button data-sec="${i}" class="${SECON.has(i)?'on':''}">${n}</button>`).join('');
   document.querySelectorAll('#colSeg [data-mg]').forEach(b=>b.onclick=()=>{MERGE=!MERGE;try{localStorage.setItem('prs_merge',MERGE?'1':'0');}catch(e){}render();});
   document.querySelectorAll('#colSeg [data-cv]').forEach(b=>b.onclick=()=>{COLVIEW=b.dataset.cv==='entry'?'entry':'all';if(b.dataset.cv==='all')SECON=new Set(SECTIONS.map((_,i)=>i));render();});
   document.querySelectorAll('#colSeg [data-sec]').forEach(b=>b.onclick=()=>{const i=+b.dataset.sec;SECON.has(i)?SECON.delete(i):SECON.add(i);if(!SECON.size)SECON.add(i);render();});
@@ -661,11 +697,11 @@ function renderTracker(D){
   const head=`<colgroup><col style="width:42px">${G.cols.map(k=>`<col style="width:${W[k]||110}px">`).join('')}</colgroup><thead><tr class="sec"><th class="rn">#</th>${band}</tr><tr class="hdr"><th class="rn" title="Select all">◢</th>${G.cols.map((k,c)=>`<th class="${C[k][2]==='a'?'au':'in'}" data-hc="${c}" title="${esc(C[k][1])}">${esc(C[k][1].replace(' (auto)',''))}</th>`).join('')}</tr></thead>`;
   const MM=mergeMap(byId); G.merge=MM;
   const body=G.rows.map((id,r)=>{ const o=id?byId.get(id):null;
-    return `<tr class="${id?'':'blank'}"><td class="rn" data-rr="${r}">${id?o.rowNo:'+'}</td>${G.cols.map((k,c)=>{const a=C[k][2]==='a', numc=NUMK.has(k)||MONEY.has(k)||/^lt\d|^(qtyVar|overdue|aging|totRec|first)$/.test(k);
+    return `<tr class="${id?'':'blank'}"><td class="rn" data-rr="${r}">${id?r+1:'+'}</td>${G.cols.map((k,c)=>{const a=C[k][2]==='a', numc=NUMK.has(k)||MONEY.has(k)||/^lt\d|^(qtyVar|overdue|aging|totRec|first)$/.test(k);
       const raw=id?(DEMO?DEMO.rows:RAW).get(id):null; const bad=(k==='match'&&o&&/CHECK/.test(o.match))||(k==='onTime'&&o&&/^Late/.test(o.onTime))||(k==='pay'&&o&&o.pay==='Overdue')||(k==='docsOk'&&o&&String(o.docsOk).toUpperCase()==='N');
       const warn=!a&&raw&&!inList(k,raw[k]);
       const mg=MM.get(r+','+c), mh=mg&&mg[0]===r, mc=mg&&mg[0]!==r, mlast=mg&&mg[mg.length-1]===r;
-      return `<td data-r="${r}" data-c="${c}" class="${a?'au':''} ${numc?'num':''} ${bad?'bad':''} ${warn?'warn':''} ${k==='stage'?stCls(o&&o.stage):''} ${mg?'mg':''} ${mh?'mh':''} ${mc?'mc':''} ${mg&&!mlast?'mnb':''}" ${mh?`title="Merged across ${mg.length} lines — editing changes all of them"`:''}>${mc?'':esc(gText(o,k))}</td>`;}).join('')}</tr>`;}).join('');
+      return `<td data-r="${r}" data-c="${c}" class="${a?'au':''} ${numc?'num':''} ${bad?'bad':''} ${warn?'warn':''} ${k==='stage'?stCls(o&&o.stage):''} ${mg?'mg':''} ${mh?'mh':''} ${mc?'mc':''} ${mg&&!mlast?'mnb':''}" ${mh?`title="Merged across ${mg.length} lines — editing changes all of them"`:''}>${mc?(mg.length>=6?`<span class="ghost">${esc(gText(o,k))}</span>`:''):esc(gText(o,k))}${mh&&k==='prs'?` <span class="lc">${mg.length} lines</span>`:''}</td>`;}).join('')}</tr>`;}).join('');
   const wrap=document.getElementById('gwrap'), st=wrap.scrollTop, sl=wrap.scrollLeft;
   document.getElementById('xl').innerHTML=`<table class="gt">${head}<tbody>${body}</tbody></table>`;
   wrap.scrollTop=st; wrap.scrollLeft=sl;
@@ -685,7 +721,7 @@ function paint(){
   const amg=G.merge&&G.merge.get(G.a.r+','+G.a.c); if(amg)amg.forEach(x=>{const el=G.cells[x]&&G.cells[x][G.a.c]; if(el&&el!==ac){el.classList.add('sel');painted.push(el);}});
   const n=(r2-r1+1)*(c2-c1+1); let sm=0,cnt=0;
   if(n>1){ for(let r=r1;r<=r2;r++)for(let c=c1;c<=c2;c++){const o=rowObj(r);const v=o&&o[G.cols[c]];if(typeof v==='number'){sm+=v;cnt++;}} }
-  const k=G.cols[G.a.c]; document.getElementById('gsel').textContent=(k?C[k][1].replace(' (auto)','')+' • ':'')+(n>1?`${r2-r1+1}×${c2-c1+1} selected${cnt?` • Sum ${sm.toLocaleString('en-PH',{maximumFractionDigits:2})} • Count ${cnt}`:''}`:`Row ${G.rows[G.a.r]?rowObj(G.a.r).rowNo:'new'}`);
+  const k=G.cols[G.a.c]; document.getElementById('gsel').textContent=(k?C[k][1].replace(' (auto)','')+' • ':'')+(n>1?`${r2-r1+1}×${c2-c1+1} selected${cnt?` • Sum ${sm.toLocaleString('en-PH',{maximumFractionDigits:2})} • Count ${cnt}`:''}`:`Row ${G.rows[G.a.r]?G.a.r+1:'new'}`);
 }
 function rowObj(r){ const id=G.rows[r]; return id?ALL.find(o=>o.id===id):null; }
 function scrollTo(r,c){ const el=G.cells[r]&&G.cells[r][c]; if(!el)return; const w=document.getElementById('gwrap'); const er=el.getBoundingClientRect(), wr=w.getBoundingClientRect();
@@ -763,7 +799,7 @@ function pasteTSV(text){
   applyChanges(list,`Pasted ${rows.length} row(s) × ${rows[0].length} column(s)`+(lost>0?` — ${lost} column(s) fell past the last column`:'')).then(()=>{
     // Oracle check: pasted "Ordered" must equal Qty × Price
     const bad=checks.filter(ch=>{const o=rowObj(ch.r);const v=num(ch.v);return o&&v!=null&&o.ordered!=null&&Math.abs(o.ordered-v)>0.01;});
-    if(bad.length)ask('Ordered amount mismatch',`${bad.length} pasted line(s) have Qty × Price that does not equal the Oracle “Ordered” amount (rows ${bad.map(b=>rowObj(b.r).rowNo).join(', ')}). Check the quantity and the 4-decimal unit price.`,[['OK',1,'pri']]);
+    if(bad.length)ask('Ordered amount mismatch',`${bad.length} pasted line(s) have Qty × Price that does not equal the Oracle “Ordered” amount (rows ${bad.map(b=>b.r+1).join(', ')}). Check the quantity and the 4-decimal unit price.`,[['OK',1,'pri']]);
     else if(checks.length)toast(`Pasted ${rows.length} row(s) — Qty × Price matches Oracle Ordered on all ${checks.length} line(s) ✓`);
   });
   G.s={r:r1,c:c1}; G.a={r:r1+rows.length-1,c:Math.min(G.cols.length-1,c1+rows[0].length-1)};
@@ -804,7 +840,7 @@ async function deleteRows(){ const {r1,r2}=rect(); const ids=G.rows.slice(r1,r2+
   document.addEventListener('copy',e=>{ if(!gridFocus||G.edit||CUR!=='tracker')return; e.preventDefault(); e.clipboardData.setData('text/plain',selTSV()); const {r1,r2,c1,c2}=rect(); toast(`Copied ${(r2-r1+1)*(c2-c1+1)} cell(s)`); });
   document.addEventListener('paste',e=>{ if(!gridFocus||G.edit||CUR!=='tracker'||document.querySelector('.big.on'))return; e.preventDefault(); pasteTSV(e.clipboardData.getData('text/plain')); });
   document.getElementById('gtool').addEventListener('click',async e=>{ const b=e.target.closest('button'); if(!b)return; const a=b.dataset.g; gridFocus=true;
-    if(a==='undo')undo(); if(a==='edit')startEdit(); if(a==='fill')fillDown(); if(a==='clear')clearSel(); if(a==='del')deleteRows();
+    if(a==='merge')mergeSel(); if(a==='unmerge')unmergeSel(); if(a==='undo')undo(); if(a==='edit')startEdit(); if(a==='fill')fillDown(); if(a==='clear')clearSel(); if(a==='del')deleteRows();
     if(a==='form'){const id=G.rows[G.a.r]; if(id)openRow(id); else openRow(null);}
     if(a==='copy'){ const t=selTSV(); try{await navigator.clipboard.writeText(t);toast('Copied');}catch(err){toast('Press Ctrl+C to copy');} }
     if(a==='paste'){ try{ const t=await navigator.clipboard.readText(); if(t){pasteTSV(t);return;} }catch(err){} document.getElementById('pbTxt').value=''; document.getElementById('pbox').classList.add('on'); scrimOn('pb'); setTimeout(()=>document.getElementById('pbTxt').focus(),50); }
@@ -866,9 +902,10 @@ async function oraAdd(){
   let skipDup=false;
   if(issues.length){ const r=await ask('Check before adding',issues.map(esc).join('<br>')+'<br><br>Add anyway?',[['Go back',0],...(dups.length?[['Add, skip duplicates','skip','pri']]:[]),['Add all',1,dups.length?'':'pri']]); if(!r)return; skipDup=r==='skip'; }
   if(!hdr.prs&&!hdr.po&&lines.every(l=>!l.po)){toast('Enter a PRS No. or PO No.');return;}
-  const use=skipDup?lines.filter(l=>!dups.includes(l)):lines; let seq=nextSeq(); const created=[];
+  const use=skipDup?lines.filter(l=>!dups.includes(l)):lines; let seq=nextSeq(), step=1; const created=[];
+  if(hdr.prs){ const same=ALL.filter(o=>o.prs===hdr.prs); if(same.length){ const last=Math.max(...same.map(o=>o.seq||0)); const after=ALL.map(o=>o.seq||0).filter(x=>x>last); const next=after.length?Math.min(...after):last+use.length+1; step=(next-last)/(use.length+1); seq=last+step; } }
   const base={}; Object.entries(hdr).forEach(([k,v])=>{ const pv=parseVal(k,v); if(pv!==INVALID)base[k]=pv; });
-  use.forEach((l,i)=>{ const row={...base,seq:seq+i,line:l.line,item:l.item||null,desc:l.desc||null,qty:l.qty,uom:l.uom||null,price:l.price};
+  use.forEach((l,i)=>{ const row={...base,seq:seq+i*step,line:l.line,item:l.item||null,desc:l.desc||null,qty:l.qty,uom:l.uom||null,price:l.price};
     if(l.po)row.po=l.po; if(l.supplier&&!row.supplier)row.supplier=l.supplier; if(l.expDel){const d=parseVal('expDel',l.expDel);if(d&&d!==INVALID)row.expDel=d;}
     if(!row.itemDesc)row.itemDesc=l.desc||null; if(!row.qtyReq&&l.qty!=null){row.qtyReq=l.qty;row.uomReq=l.uom||null;}
     Object.keys(row).forEach(k=>(row[k]==null||row[k]==='')&&delete row[k]); created.push(['r'+uid()+i,row]); });
@@ -1011,7 +1048,7 @@ function renderLists(){
    +`<div class="f"><label>VAT rate (decimal)</label><input data-s="vatRate" value="${LISTS.vatRate}"><label style="margin-top:10px">3-way match tolerance (₱)</label><input data-s="tol" value="${LISTS.tol}"><label style="margin-top:10px">Due-soon window (days)</label><input data-s="dueSoon" value="${LISTS.dueSoon}"><p style="font-size:11px;color:var(--amber);margin-top:10px;line-height:1.5">EWT rates and VAT are assumptions from your workbook — confirm with Accounting per supplier / ATC.</p></div>`;
 }
 document.getElementById('saveLists').onclick=async()=>{
-  const l=JSON.parse(JSON.stringify(LISTS));
+  const l=JSON.parse(JSON.stringify(LISTS)); // keeps l.ui (merge settings)
   document.querySelectorAll('#listsBox textarea').forEach(t=>{const k=t.dataset.k, lines=t.value.split('\n').map(s=>s.trim()).filter(Boolean);
     if(k==='terms'){l.terms={};lines.forEach(x=>{const [n,d]=x.split('=');if(T(n))l.terms[T(n)]=num(d)??0;});}
     else if(k==='ewt'){l.ewt=lines.map(num).filter(x=>x!=null);} else l[k]=lines;});
