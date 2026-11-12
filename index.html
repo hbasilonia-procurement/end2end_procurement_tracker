@@ -181,6 +181,10 @@ input[type=date]{color-scheme:dark}
 .gt td.au.act{background:#eef8f1!important}
 .gt td.rn.rsel{background:#cfe3f7;color:#0b4a8b;font-weight:700}
 .gt td.warn{background:#fff4d6}
+.gt td.mnb{border-bottom-color:transparent}
+.gt td.mh{font-weight:600}
+.gt td.mg:not(.au):not(.sel):not(.act){background:#f7fafc}
+.gt td.mg.au:not(.sel):not(.act){background:#e8f5ec}
 .gt td.bad{background:#ffe1e1;color:#a40000}
 .gt tr.blank td:not(.rn){background:#fbfcfd}
 .gt tr.blank td.rn{color:#aab4bf}
@@ -614,6 +618,15 @@ const SEC_OF={}; (()=>{let i=0;SECTIONS.forEach(([n,c],si)=>{for(let j=0;j<c;j++
 const SHORT=['Status','1 PRS','2 Canvass','3 PO','4 Delivery','5 Invoice','6 To AP','7 Payment','8 Lead time','Remarks','System'];
 let COLVIEW='entry', SECON=new Set([0,1,2,3,4,5,6,7,9]);
 const BLANKS=6;
+const NOMERGE=new Set(['line','item','desc','qty','uom','price','ordered','itemDesc','qtyReq','uomReq']); // Oracle PO line data — always one cell per line
+let MERGE=true; try{ MERGE=localStorage.getItem('prs_merge')!=='0'; }catch(e){}
+function mergeMap(byId){ // groups consecutive rows of the same PO (or PRS when there is no PO yet); merges equal, non-blank cells
+  const M=new Map(); if(!MERGE)return M;
+  const gk=id=>{ const o=id&&byId.get(id); return o?(o.po?'PO:'+o.po:(o.prs?'PRS:'+o.prs:null)):null; };
+  let r=0; while(r<G.rows.length){ const k=gk(G.rows[r]); let e=r; while(k&&e+1<G.rows.length&&gk(G.rows[e+1])===k)e++;
+    if(e>r){ G.cols.forEach((col,c)=>{ if(NOMERGE.has(col))return; let a=r; while(a<=e){ const t=gText(byId.get(G.rows[a]),col); let b=a; if(t!==''){ while(b+1<=e&&gText(byId.get(G.rows[b+1]),col)===t)b++; } if(b>a){ const rows=[]; for(let x=a;x<=b;x++)rows.push(x); rows.forEach(x=>M.set(x+','+c,rows)); } a=b+1; } }); }
+    r=e+1; }
+  return M; }
 const G={cols:[],rows:[],a:{r:0,c:2},s:{r:0,c:2},drag:false,edit:null,undo:[],cells:[]};
 const W={stage:150,pay:120,prs:120,prsDate:96,sbu:100,dept:150,itemDesc:200,supplier:170,po:120,poDate:96,line:50,item:120,desc:220,qty:70,uom:70,price:96,ordered:104,vat:84,terms:110,expDel:96,buyer:100,dr:100,actDel:96,qtyRec:70,delStatus:110,rr:90,si:110,invDate:96,docsRec:110,invAmt:104,match:120,transAP:110,docsOk:60,due:96,net:104,datePaid:96,paid:104,bal:104,remarks:200,missing:180,apRemarks:170};
 
@@ -637,7 +650,8 @@ function renderTracker(D){
   const filt=sf||pf||document.getElementById('q').value||document.getElementById('sbu').value;
   document.getElementById('trSub').textContent=`${R.length} of ${ALL.length} rows${filt?' (filtered)':''} • click a cell and type, drag to select, Ctrl+C / Ctrl+V to copy & paste blocks from Excel or Oracle`;
   // column view buttons
-  document.getElementById('colSeg').innerHTML=`<button data-cv="entry" class="${COLVIEW==='entry'?'on':''}">Entry view</button><button data-cv="all" class="${COLVIEW==='all'&&SECON.size===SECTIONS.length?'on':''}">All 78 columns</button>`+SHORT.map((n,i)=>COLVIEW==='entry'?'':`<button data-sec="${i}" class="${SECON.has(i)?'on':''}">${n}</button>`).join('');
+  document.getElementById('colSeg').innerHTML=`<button data-mg="1" class="${MERGE?'on':''}" title="Show repeated PRS / PO details once across that PO's line items">⊞ Merge same PO</button><button data-cv="entry" class="${COLVIEW==='entry'?'on':''}">Entry view</button><button data-cv="all" class="${COLVIEW==='all'&&SECON.size===SECTIONS.length?'on':''}">All 78 columns</button>`+SHORT.map((n,i)=>COLVIEW==='entry'?'':`<button data-sec="${i}" class="${SECON.has(i)?'on':''}">${n}</button>`).join('');
+  document.querySelectorAll('#colSeg [data-mg]').forEach(b=>b.onclick=()=>{MERGE=!MERGE;try{localStorage.setItem('prs_merge',MERGE?'1':'0');}catch(e){}render();});
   document.querySelectorAll('#colSeg [data-cv]').forEach(b=>b.onclick=()=>{COLVIEW=b.dataset.cv==='entry'?'entry':'all';if(b.dataset.cv==='all')SECON=new Set(SECTIONS.map((_,i)=>i));render();});
   document.querySelectorAll('#colSeg [data-sec]').forEach(b=>b.onclick=()=>{const i=+b.dataset.sec;SECON.has(i)?SECON.delete(i):SECON.add(i);if(!SECON.size)SECON.add(i);render();});
   // section band
@@ -645,11 +659,13 @@ function renderTracker(D){
   G.cols.forEach(k=>{const si=SEC_OF[k];if(si!==cur){flush();cur=si;span=0;}span++;}); flush();
   const byId=new Map(D.map(o=>[o.id,o]));
   const head=`<colgroup><col style="width:42px">${G.cols.map(k=>`<col style="width:${W[k]||110}px">`).join('')}</colgroup><thead><tr class="sec"><th class="rn">#</th>${band}</tr><tr class="hdr"><th class="rn" title="Select all">◢</th>${G.cols.map((k,c)=>`<th class="${C[k][2]==='a'?'au':'in'}" data-hc="${c}" title="${esc(C[k][1])}">${esc(C[k][1].replace(' (auto)',''))}</th>`).join('')}</tr></thead>`;
+  const MM=mergeMap(byId); G.merge=MM;
   const body=G.rows.map((id,r)=>{ const o=id?byId.get(id):null;
     return `<tr class="${id?'':'blank'}"><td class="rn" data-rr="${r}">${id?o.rowNo:'+'}</td>${G.cols.map((k,c)=>{const a=C[k][2]==='a', numc=NUMK.has(k)||MONEY.has(k)||/^lt\d|^(qtyVar|overdue|aging|totRec|first)$/.test(k);
       const raw=id?(DEMO?DEMO.rows:RAW).get(id):null; const bad=(k==='match'&&o&&/CHECK/.test(o.match))||(k==='onTime'&&o&&/^Late/.test(o.onTime))||(k==='pay'&&o&&o.pay==='Overdue')||(k==='docsOk'&&o&&String(o.docsOk).toUpperCase()==='N');
       const warn=!a&&raw&&!inList(k,raw[k]);
-      return `<td data-r="${r}" data-c="${c}" class="${a?'au':''} ${numc?'num':''} ${bad?'bad':''} ${warn?'warn':''} ${k==='stage'?stCls(o&&o.stage):''}">${esc(gText(o,k))}</td>`;}).join('')}</tr>`;}).join('');
+      const mg=MM.get(r+','+c), mh=mg&&mg[0]===r, mc=mg&&mg[0]!==r, mlast=mg&&mg[mg.length-1]===r;
+      return `<td data-r="${r}" data-c="${c}" class="${a?'au':''} ${numc?'num':''} ${bad?'bad':''} ${warn?'warn':''} ${k==='stage'?stCls(o&&o.stage):''} ${mg?'mg':''} ${mh?'mh':''} ${mc?'mc':''} ${mg&&!mlast?'mnb':''}" ${mh?`title="Merged across ${mg.length} lines — editing changes all of them"`:''}>${mc?'':esc(gText(o,k))}</td>`;}).join('')}</tr>`;}).join('');
   const wrap=document.getElementById('gwrap'), st=wrap.scrollTop, sl=wrap.scrollLeft;
   document.getElementById('xl').innerHTML=`<table class="gt">${head}<tbody>${body}</tbody></table>`;
   wrap.scrollTop=st; wrap.scrollLeft=sl;
@@ -666,6 +682,7 @@ function paint(){
   const {r1,r2,c1,c2}=rect();
   for(let r=r1;r<=r2;r++){ const row=G.cells[r]; if(!row)continue; for(let c=c1;c<=c2;c++){const el=row[c];if(el){el.classList.add('sel');painted.push(el);}} const rn=G.rnCells[r]; if(rn){rn.classList.add('rsel');painted.push(rn);} }
   const ac=G.cells[G.a.r]&&G.cells[G.a.r][G.a.c]; if(ac){ac.classList.add('act');painted.push(ac);}
+  const amg=G.merge&&G.merge.get(G.a.r+','+G.a.c); if(amg)amg.forEach(x=>{const el=G.cells[x]&&G.cells[x][G.a.c]; if(el&&el!==ac){el.classList.add('sel');painted.push(el);}});
   const n=(r2-r1+1)*(c2-c1+1); let sm=0,cnt=0;
   if(n>1){ for(let r=r1;r<=r2;r++)for(let c=c1;c<=c2;c++){const o=rowObj(r);const v=o&&o[G.cols[c]];if(typeof v==='number'){sm+=v;cnt++;}} }
   const k=G.cols[G.a.c]; document.getElementById('gsel').textContent=(k?C[k][1].replace(' (auto)','')+' • ':'')+(n>1?`${r2-r1+1}×${c2-c1+1} selected${cnt?` • Sum ${sm.toLocaleString('en-PH',{maximumFractionDigits:2})} • Count ${cnt}`:''}`:`Row ${G.rows[G.a.r]?rowObj(G.a.r).rowNo:'new'}`);
@@ -713,6 +730,7 @@ async function undo(){ const g=G.undo.pop(); if(!g){toast('Nothing to undo');ret
 /* ---- editing ---- */
 function startEdit(seed){
   const k=G.cols[G.a.c]; if(!k)return; if(C[k][2]==='a'){toast('Green columns are automatic — they calculate by themselves');return;}
+  const mg=G.merge&&G.merge.get(G.a.r+','+G.a.c); if(mg&&mg[0]!==G.a.r){ G.a={r:mg[0],c:G.a.c}; G.s={...G.a}; paint(); }
   const td=G.cells[G.a.r][G.a.c]; const raw=G.rows[G.a.r]?(DEMO?DEMO.rows:RAW).get(G.rows[G.a.r]):null;
   let val=seed!=null?seed:(raw&&raw[k]!=null?(k==='ewtRate'?r2(raw[k]*100)+'%':String(raw[k])):'');
   const lid=C[k][2]==='s'?'dl_'+k:''; if(lid&&!document.getElementById(lid)){document.body.insertAdjacentHTML('beforeend',`<datalist id="${lid}"></datalist>`);} if(lid)document.getElementById(lid).innerHTML=optList(k).map(x=>`<option value="${esc(k==='ewtRate'?r2(x*100)+'%':x)}">`).join('');
@@ -726,11 +744,11 @@ function startEdit(seed){
     else if(e.key==='Escape'){e.preventDefault();G.edit=null;render();document.getElementById('gwrap').focus({preventScroll:true});} });
   inp.addEventListener('blur',()=>{ if(G.edit&&G.edit.inp===inp)commit(); });
 }
-function commit(){ const e=G.edit; if(!e)return; G.edit=null; const k=G.cols[e.c]; applyChanges([{r:e.r,k,v:e.inp.value}]); }
+function commit(){ const e=G.edit; if(!e)return; G.edit=null; const k=G.cols[e.c]; const rows=(G.merge&&G.merge.get(e.r+','+e.c))||[e.r]; applyChanges(rows.map(r=>({r,k,v:e.inp.value})),rows.length>1?`Updated ${rows.length} merged lines`:''); }
 function fillSel(v){ const {r1,r2,c1,c2}=rect(), list=[]; for(let r=r1;r<=r2;r++)for(let c=c1;c<=c2;c++)list.push({r,k:G.cols[c],v}); applyChanges(list,`Filled ${list.length} cell(s)`); }
 function fillDown(){ const {r1,r2,c1,c2}=rect(); if(r2===r1){toast('Select the cell to copy and the cells below it first');return;} const list=[];
   for(let c=c1;c<=c2;c++){ const t=copyText((DEMO?DEMO.rows:RAW).get(G.rows[r1])||{},G.cols[c]); for(let r=r1+1;r<=r2;r++)list.push({r,k:G.cols[c],v:t}); } applyChanges(list,'Filled down'); }
-function clearSel(){ const {r1,r2,c1,c2}=rect(), list=[]; for(let r=r1;r<=r2;r++){ if(!G.rows[r])continue; for(let c=c1;c<=c2;c++)list.push({r,k:G.cols[c],v:''}); } applyChanges(list); }
+function clearSel(){ const {r1,r2,c1,c2}=rect(), seen=new Set(), list=[]; for(let r=r1;r<=r2;r++){ if(!G.rows[r])continue; for(let c=c1;c<=c2;c++){ const rows=(G.merge&&G.merge.get(r+','+c))||[r]; rows.forEach(x=>{ const key=x+','+c; if(!seen.has(key)){seen.add(key);list.push({r:x,k:G.cols[c],v:''});} }); } } applyChanges(list); }
 function selTSV(){ const {r1,r2,c1,c2}=rect(), out=[]; for(let r=r1;r<=r2;r++){ const o=rowObj(r), raw=G.rows[r]?(DEMO?DEMO.rows:RAW).get(G.rows[r]):null, line=[];
   for(let c=c1;c<=c2;c++){ const k=G.cols[c]; line.push((C[k][2]==='a'?copyText(o,k):copyText(raw,k)).replace(/[\t\n\r]+/g,' ')); } out.push(line.join('\t')); } return out.join('\n'); }
 function pasteTSV(text){
